@@ -1,50 +1,51 @@
 import os
 import sqlite3
-from datetime import datetime, timedelta
-
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 import httpx
+from typing import Optional
+from openai import OpenAI
 
-# -------------------------------
+# ======================================
 # CONFIG
-# -------------------------------
+# ======================================
 
 AEMET_API_KEY = os.getenv("AEMET_KEY")
 OPENAI_KEY = os.getenv("OPENAI_KEY")
 
-from openai import OpenAI
 client = OpenAI(api_key=OPENAI_KEY)
 
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -------------------------------
-# BASE DE DATOS HISTÓRICA
-# -------------------------------
+# ======================================
+# BASE DE DATOS
+# ======================================
 
-DB = "history.db"
+DB = "meteo.db"
 
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS historico (
+        CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT,
             temp REAL,
-            humedad REAL,
-            lluvia REAL,
-            cielo TEXT
+            humedad INTEGER,
+            lluvia INTEGER,
+            sky TEXT,
+            tendencia_max REAL,
+            tendencia_min REAL
         )
     """)
     conn.commit()
@@ -52,114 +53,119 @@ def init_db():
 
 init_db()
 
-def save_to_history(temp, humedad, lluvia, cielo):
+def save_to_history(d):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute(
-        "INSERT INTO historico(ts, temp, humedad, lluvia, cielo) VALUES (?, ?, ?, ?, ?)",
-        (datetime.now().isoformat(), temp, humedad, lluvia, cielo)
-    )
+    c.execute("""
+        INSERT INTO history (ts,temp,humedad,lluvia,sky,tendencia_max,tendencia_min)
+        VALUES (?,?,?,?,?,?,?)
+    """, (d["ts"], d["temp"], d["humedad"], d["lluvia"], d["sky"], d["tendencia_max"], d["tendencia_min"]))
     conn.commit()
     conn.close()
 
-# -------------------------------
-# MODELOS
-# -------------------------------
+
+# ======================================
+# MODELO IA
+# ======================================
+
 class AskModel(BaseModel):
     question: str
-    location: Optional[str] = None
+    location: Optional[str] = "Noia"
 
-# -------------------------------
-# ENDPOINT PRINCIPAL
-# -------------------------------
+# ======================================
+# ENDPOINTS
+# ======================================
+
 @app.get("/")
 def root():
-    return {"status": "OK", "service": "OCA Sistem Meteo Backend"}
+    return {"msg": "OCA Sistem Meteo Backend OK"}
 
-# -------------------------------
-# 1. COMBINED AEMET + METEOGALICIA
-# -------------------------------
+# ---------------------------
+# MÉTEO COMBINADO
+# ---------------------------
+
 @app.get("/meteo/combined")
-async def meteo_combined():
+async def combined():
+
+    url = "https://servizos.meteogalicia.gal/apiv3/xml/observacionEstacionsMeteo"
 
     try:
-        # AEMET: consulta básica
-        url = f"https://opendata.aemet.es/opendata/api/observacion/convencional/todas?api_key={AEMET_API_KEY}"
+        r = httpx.get(url, timeout=10)
 
-        async with httpx.AsyncClient() as client_http:
-            res = await client_http.get(url)
-            data = res.json()
+        # *** FIX DECODIFICACIÓN ***
+        text = r.content.decode("latin-1", errors="ignore")
 
-        # NOTA: el JSON real no se procesa aquí porque depende de tu clave
-        resultado = [
-            {
-                "ts": datetime.now().isoformat(),
-                "temp": 10.5,
-                "humedad": 82,
-                "lluvia": 0,
-                "sky": "nubes altas",
-                "tendencia_max": None,
-                "tendencia_min": None
-            }
-        ]
+        # EJEMPLO FAKE: debes reemplazar con parseo real
+        data = [{
+            "ts": datetime.now().isoformat(),
+            "temp": 10.5,
+            "humedad": 82,
+            "lluvia": 0,
+            "sky": "nubes altas",
+            "tendencia_max": None,
+            "tendencia_min": None
+        }]
 
-        # Guardamos histórico
-        save_to_history(
-            temp=resultado[0]["temp"],
-            humedad=resultado[0]["humedad"],
-            lluvia=resultado[0]["lluvia"],
-            cielo=resultado[0]["sky"]
-        )
-
-        return resultado
+        save_to_history(data[0])
+        return data
 
     except Exception as e:
         return {"error": "combined_failed", "detail": str(e)}
 
-# -------------------------------
-# 2. PROBABILIDAD LLUVIA IA
-# -------------------------------
-@app.get("/meteo/ai_rain")
-async def lluvia_ia():
 
-    pregunta = """
-    Analiza si lloverá en Galicia en las próximas horas.
-    Devuelve solamente un número del 0 al 100 (probabilidad de lluvia).
-    """
+# ---------------------------
+# IA LLUVIA
+# ---------------------------
+
+@app.get("/meteo/ai_rain")
+async def rain_ai():
 
     try:
-        completion = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": pregunta}]
+        prompt = """
+        Basado en los últimos datos meteorológicos de Galicia,
+        predice la probabilidad de lluvia en porcentaje.
+        Solo responde con un número del 0 al 100.
+        """
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
         )
 
-        texto = completion.choices[0].message["content"]
+        # *** FIX SUBSCRIPTABLE ***
+        lluvia = resp.choices[0].message.content.strip()
 
-        num = 50
-        for t in texto.split():
-            if t.replace("%", "").isdigit():
-                num = int(t.replace("%", ""))
+        try:
+            lluvia = int(lluvia)
+        except:
+            lluvia = 50
 
-        return {"prob_lluvia": num}
+        return {"prob_lluvia": lluvia}
 
     except Exception as e:
         return {"error": "ai_failed", "detail": str(e)}
 
-# -------------------------------
-# 3. CHATGPT GENERAL
-# -------------------------------
+
+# ---------------------------
+# CHAT GENERAL
+# ---------------------------
+
 @app.post("/chatgpt")
-async def chat_ai(p: AskModel):
+async def ask_ai(body: AskModel):
 
     try:
-        content = f"Pregunta: {p.question}\nUbicación: {p.location}"
-
-        completion = client.chat.completions.create(
-            model="gpt-4.1",
-            messages=[{"role": "user", "content": content}]
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Eres una IA meteorológica experta en Galicia."},
+                {"role": "user", "content": f"Ubicación: {body.location}. Pregunta: {body.question}"}
+            ]
         )
 
-        return {"reply": completion.choices[0].message["content"]}
+        # *** FIX SUBSCRIPTABLE ***
+        reply = resp.choices[0].message.content
+
+        return {"reply": reply}
 
     except Exception as e:
-        return {"error": "chat_failed", "detail": str(e)}
+        return {"error": "ai_failed", "detail": str(e)}

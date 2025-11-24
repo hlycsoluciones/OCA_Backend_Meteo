@@ -86,16 +86,8 @@ def root():
 
 @app.get("/meteo/combined")
 async def combined():
-
-    url = "https://servizos.meteogalicia.gal/apiv3/xml/observacionEstacionsMeteo"
-
     try:
-        r = httpx.get(url, timeout=10)
-
-        # *** FIX DECODIFICACIÓN ***
-        text = r.content.decode("latin-1", errors="ignore")
-
-        # EJEMPLO FAKE: debes reemplazar con parseo real
+        # Datos de ejemplo, de momento sin MeteoGalicia
         data = [{
             "ts": datetime.now().isoformat(),
             "temp": 10.5,
@@ -103,14 +95,17 @@ async def combined():
             "lluvia": 0,
             "sky": "nubes altas",
             "tendencia_max": None,
-            "tendencia_min": None
+            "tendencia_min": None,
         }]
 
+        # Guarda en el histórico
         save_to_history(data[0])
+
         return data
 
     except Exception as e:
         return {"error": "combined_failed", "detail": str(e)}
+
 
 
 # ---------------------------
@@ -169,3 +164,4 @@ async def ask_ai(body: AskModel):
 
     except Exception as e:
         return {"error": "ai_failed", "detail": str(e)}
+

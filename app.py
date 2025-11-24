@@ -111,29 +111,36 @@ async def combined():
 # ---------------------------
 # IA LLUVIA
 # ---------------------------
-
 @app.get("/meteo/ai_rain")
 async def rain_ai():
-
     try:
-        prompt = """
-        Basado en los últimos datos meteorológicos de Galicia,
-        predice la probabilidad de lluvia en porcentaje.
-        Solo responde con un número del 0 al 100.
-        """
+        prompt = (
+            "Basado en los últimos datos meteorológicos de Galicia, "
+            "predice la probabilidad de lluvia en porcentaje. "
+            "Solo responde con un número del 0 al 100."
+        )
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[
+                {"role": "system", "content": "Eres una IA meteorológica experta en Galicia."},
+                {"role": "user", "content": prompt},
+            ],
         )
 
-        # *** FIX SUBSCRIPTABLE ***
-        lluvia = resp.choices[0].message.content.strip()
+        # Objeto ChatCompletionMessage
+        mensaje = resp.choices[0].message
+        texto_lluvia = mensaje.content.strip()
 
-        try:
-            lluvia = int(lluvia)
-        except:
-            lluvia = 50
+        # Extraer solo dígitos por si la IA responde "40%" o "40 de 100"
+        solo_digitos = "".join(ch for ch in texto_lluvia if ch.isdigit())
+        if solo_digitos:
+            lluvia = int(solo_digitos)
+        else:
+            lluvia = 50  # valor por defecto de seguridad
+
+        # Limitar entre 0 y 100 por si acaso
+        lluvia = max(0, min(100, lluvia))
 
         return {"prob_lluvia": lluvia}
 
@@ -164,4 +171,5 @@ async def ask_ai(body: AskModel):
 
     except Exception as e:
         return {"error": "ai_failed", "detail": str(e)}
+
 

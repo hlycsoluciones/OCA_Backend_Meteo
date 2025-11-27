@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -62,6 +62,42 @@ def save_to_history(d):
     """, (d["ts"], d["temp"], d["humedad"], d["lluvia"], d["sky"], d["tendencia_max"], d["tendencia_min"]))
     conn.commit()
     conn.close()
+def get_recent_temps(days: int = 7):
+    """
+    Devuelve temperaturas de los últimos días
+    """
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+
+    limite = datetime.utcnow() - timedelta(days=days)
+    c.execute(
+        "SELECT temp FROM history WHERE ts >= ? ORDER BY ts DESC",
+        (limite.isoformat(),)
+    )
+
+    filas = c.fetchall()
+    conn.close()
+    temps = [f[0] for f in filas if f[0] is not None]
+    return temps
+
+
+def compute_trend(current_temp: float, days: int = 7):
+    """
+    Calcula tendencias comparando la temperatura actual
+    con valores máximos y mínimos recientes.
+    """
+    temps = get_recent_temps(days=days)
+
+    if len(temps) < 3:
+        return None, None
+
+    max_hist = max(temps)
+    min_hist = min(temps)
+
+    tendencia_max = current_temp - max_hist
+    tendencia_min = current_temp - min_hist
+
+    return tendencia_max, tendencia_min
 
 
 # ======================================
@@ -87,20 +123,25 @@ def root():
 @app.get("/meteo/combined")
 async def combined():
     try:
-        # Datos de ejemplo, de momento sin MeteoGalicia
+        # Datos temporales hasta conectar AEMET
+        current_temp = 10.5
+        current_hum = 82
+        current_rain = 0
+        current_sky = "nubes altas"
+
+        tendencia_max, tendencia_min = compute_trend(current_temp, days=7)
+
         data = [{
             "ts": datetime.now().isoformat(),
-            "temp": 10.5,
-            "humedad": 82,
-            "lluvia": 0,
-            "sky": "nubes altas",
-            "tendencia_max": None,
-            "tendencia_min": None,
+            "temp": current_temp,
+            "humedad": current_hum,
+            "lluvia": current_rain,
+            "sky": current_sky,
+            "tendencia_max": tendencia_max,
+            "tendencia_min": tendencia_min,
         }]
 
-        # Guarda en el histórico
         save_to_history(data[0])
-
         return data
 
     except Exception as e:
@@ -171,5 +212,7 @@ async def ask_ai(body: AskModel):
 
     except Exception as e:
         return {"error": "ai_failed", "detail": str(e)}
+
+
 
 
